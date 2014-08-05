@@ -146,7 +146,6 @@ class HodNodeTestCase(unittest.TestCase):
         self.assertEqual(hn.ip_interface_to(networks, '157.193.16.10'), networks[2])
         self.assertTrue(hn.ip_interface_to(networks, '157.193.16.128') is None)
 
-
     def test_node_init(self):
         '''test node init'''
         n = hn.Node()
@@ -158,10 +157,16 @@ class HodNodeTestCase(unittest.TestCase):
         n = hn.Node()
         desc = n.go()
 
-    def test_node_order_network(self):
+    def test_node_sorted_network_simple(self):
         '''test node order network'''
-        n = hn.Node()
-        n.order_network()
+        nw = [['localhost', '127.0.0.1', 'lo', 8]]
+        self.assertEqual(nw, hn._sorted_network(nw))
+
+
+    def test_node_sorted_network_complex(self):
+        nw = [['localhost', '127.0.0.1', 'lo', 8],
+              ['localhost', '127.0.0.1', 'ib3', 8]]
+        self.assertEqual([nw[1],nw[0]], hn._sorted_network(nw))
 
     def test_node_get_memory(self):
         '''test node get memory'''

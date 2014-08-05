@@ -28,31 +28,30 @@ Main hanythingondemand script, should be invoked in a job
 @author: Stijn De Weirdt (Universiteit Gent)
 @author: Ewan Higgs (Universiteit Gent)
 """
-import os
+import sys
+
 from hod.config.hodoption import HodOption
-from hod.hodproc import Slave, HadoopMaster
-from hod.mpiservice import MASTERRANK
+from hod.hodproc import ConfiguredSlave, ConfiguredMaster
+from hod.mpiservice import MASTERRANK, run_tasks, setup_tasks
 
 from mpi4py import MPI
 
-# allow early hook to make quick modifications
-# while reworking the code is in progress
-monkeypatch_variable = 'HOD_MONKEYPATCH_HOOK'
-if monkeypatch_variable in os.environ:
-    fn = os.environ[monkeypatch_variable]
-    if os.path.isfile(fn):
-        execfile(fn)
+def main(args):
+    options = HodOption(go_args=args)
 
-options = HodOption()
+    if MPI.COMM_WORLD.rank == MASTERRANK:
+        svc = ConfiguredMaster(options)
+    else:
+        svc = ConfiguredSlave(options)
 
-if MPI.COMM_WORLD.rank == MASTERRANK:
-    serv = HadoopMaster(options)
-else:
-    serv = Slave(options)
+    try:
+        setup_tasks(svc)
+        run_tasks(svc)
 
-try:
-    serv.run_dist()
+        svc.stop_service()
+    except Exception, e:
+        print e
+        svc.log.exception("Main HanythingOnDemand failed")
 
-    serv.stop_service()
-except:
-    serv.log.exception("Main HanythingOnDemand failed")
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
