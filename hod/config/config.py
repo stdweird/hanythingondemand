@@ -34,6 +34,7 @@ import os
 import pwd
 from os.path import join as mkpath, realpath, dirname
 from functools import partial
+import cStringIO
 
 # hod manifest config sections
 _META_SECTION = 'Meta'
@@ -56,7 +57,7 @@ def _templated_strings(workdir):
     basedir = _mkhodbasedir(workdir)
 
     _strings = {
-         #'masterhostname': This value is passed in.
+         # 'masterhostname': This value is passed in.
         'hostname': socket.getfqdn,
         'hostaddress': lambda: socket.gethostbyname(socket.getfqdn()),
         'basedir': lambda: basedir,
@@ -69,14 +70,19 @@ def _templated_strings(workdir):
 
     return _strings
 
-def load_service_config(fileobj):
+def load_service_config(fileobjs):
     '''
     Load a .ini style config for a service.
     '''
+
+    if not isinstance(fileobjs, (list, tuple)):
+        fileobjs = [fileobjs]
+
     config = SafeConfigParser()
     # optionxform = Option Transform; using str stops making it lower case.
     config.optionxform = str
-    config.readfp(fileobj)
+    for fileobj in fileobjs:
+        config.readfp(fileobj)
     return config
 
 def _resolve_templates(templates):
@@ -84,7 +90,7 @@ def _resolve_templates(templates):
     Take a dict of string to either string or to a nullary function and
     return the resolved data
     '''
-    v = [v if not callable(v) else v() for k,v in templates.items()]
+    v = [v if not callable(v) else v() for k, v in templates.items()]
     return dict(zip(templates.keys(), v))
 
 def resolve_config_str(s, template_dict, **template_kwargs):
@@ -123,7 +129,7 @@ def _abspath(filepath, working_dir):
     '''
     if not len(filepath):
         return realpath(working_dir)
-    elif filepath[0] == '/': # filepath is already absolute
+    elif filepath[0] == '/':  # filepath is already absolute
         return filepath
 
     return realpath(mkpath(working_dir, filepath))
@@ -164,7 +170,7 @@ class TemplateResolver(object):
     resolve_config_str but picklable.
     '''
     def __init__(self, **template_kwargs):
-        self.workdir = template_kwargs['workdir'] # raise if not found...
+        self.workdir = template_kwargs['workdir']  # raise if not found...
         self._template_kwargs = template_kwargs
 
     def __call__(self, s):
@@ -189,17 +195,61 @@ class PreServiceConfigOpts(object):
 
         fileobj_dir = _fileobj_dir(fileobj)
 
-        def _fixup_path(cfg):
-            return _abspath(cfg, fileobj_dir)
-
         self.modules = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'modules'))
         self.master_env = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'master_env'))
-        self.service_files = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'services'))
-        self.service_files = [_fixup_path(cfg) for cfg in self.service_files]
-        self.config_files = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'configs'))
-        self.config_files = [_fixup_path(cfg) for cfg in self.config_files]
+
+        self.services = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'services'))
+        self.service_fileobjs = self._make_servicefiles(_config, fileobj_dir)
+
+        self.configs = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'configs'))
+        self.config_fileobjs = self._make_xmlconfigs(_config, fileobj_dir)
+
         self.directories = _parse_comma_delim_list(_config.get(_CONFIG_SECTION, 'directories'))
 
+    def _make_servicefiles(self, main_config, working_dir):
+        """Make the squashed ini-files for the services"""
+
+        def _fixup_path(cfg):
+            return _abspath(cfg, working_dir)
+
+        res = []
+        for svc in self.services:
+            svc_files = _parse_comma_delim_list(main_config.get(svc, 'files'))
+            config = load_service_config([open(_fixup_path(f), 'r') for f in svc_files])
+            # TODO i don't know where to write, but it might be better to write a file for debugging reasons
+            fileobj = cStringIO.StringIO()
+            config.write(fileobj)
+            res.append(fileobj)
+        return res
+
+    def _make_xmlconfigs(self, main_config, working_dir):
+        """Make xml config from the squashed config-files"""
+
+        def _fixup_path(cfg):
+            return _abspath(cfg, working_dir)
+
+        # need to support allow_no_value
+        res = []
+        for conf in self.configs:
+            conf_files = _parse_comma_delim_list(main_config.get(conf, 'files'))
+            config = load_service_config([open(_fixup_path(f), 'r') for f in conf_files])
+
+            # assume all properties in PROPERTIES
+            # one can use ExtendedInterpolation for more tunables and other magic
+            # instead of string interpolation, create a [SYSTEM] and reference to these via ${SYSTEM:pid}
+            # hmm, only in py3? otherwise move system templates to default
+
+            xmltxt = """<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="configuration.xsl"?><configuration>"""
+            for k, v in config.items('PROPERTIES'):
+                xmltxt += "\n<property><name>%s</name><value>%s</value></property>\n" % (k, v)
+            xmltxt += "\n</configuration>\n"
+
+            # TODO i don't know where to write, but it might be better to write a file for debugging reasons
+            # to be replaced with gathering filenames in res
+            fileobj = cStringIO.StringIO()
+            fileobj.write(xmltxt)
+            res.append(fileobj)
+        return res
 
 def _cfgget(config, section, item, dflt=None):
     '''Get a value from a ConfigParser object or a default if it's not there.'''
@@ -240,11 +290,11 @@ class ConfigOpts(object):
 
 
     @property
-    def pre_start_script(self): 
+    def pre_start_script(self):
         return self._tr(_cfgget(self._config, _SERVICE_SECTION, 'ExecStartPre', ''))
 
     @property
-    def start_script(self): 
+    def start_script(self):
         return self._tr(_cfgget(self._config, _SERVICE_SECTION, 'ExecStart'))
 
     @property
@@ -252,11 +302,11 @@ class ConfigOpts(object):
         return self._tr(_cfgget(self._config, _SERVICE_SECTION, 'ExecStop'))
 
     @property
-    def basedir(self): 
+    def basedir(self):
         return _mkhodbasedir(self._tr.workdir)
 
     @property
-    def configdir(self): 
+    def configdir(self):
         return mkpath(self.basedir, 'conf')
 
     @property
@@ -280,7 +330,7 @@ class ConfigOpts(object):
 
     def __str__(self):
         return 'ConfigOpts(name=%s, runs_on=%d, pre_start_script=%s, ' \
-                'start_script=%s, stop_script=%s, basedir=%s)' %  (self.name,
+                'start_script=%s, stop_script=%s, basedir=%s)' % (self.name,
                 self._runs_on, self.pre_start_script, self.start_script,
                 self.stop_script, self.basedir)
     def __repr__(self):
